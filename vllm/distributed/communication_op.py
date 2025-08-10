@@ -7,12 +7,30 @@ import torch
 import torch.distributed
 
 from .parallel_state import get_tp_group
-# Insert microbatch yield helpers. These are no-ops if microbatching is disabled
-# or no UBatchContext is active for the current thread.
-from vllm.v1.worker.ubatching import (
-    yield_and_switch_from_compute_to_comm,
-    yield_and_switch_from_comm_to_compute,
-)
+
+
+def _get_yield_funcs():
+    """Lazily import microbatch yield helpers to avoid circular imports.
+
+    Returns a pair of callables (to_comm, to_compute). If microbatching is not
+    available or import fails during early init, returns no-op functions.
+    """
+    try:
+        from vllm.v1.worker.ubatching import (  # type: ignore
+            yield_and_switch_from_compute_to_comm as _to_comm,
+            yield_and_switch_from_comm_to_compute as _to_compute,
+        )
+        return _to_comm, _to_compute
+    except Exception:
+        # Fallback no-ops (e.g., during early import or when microbatching is
+        # not enabled). Keep signature compatible.
+        def _noop_to_comm(schedule: str = "default"):
+            return None
+
+        def _noop_to_compute(schedule: str = "default"):
+            return None
+
+        return _noop_to_comm, _noop_to_compute
 
 
 def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
@@ -22,13 +40,14 @@ def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
     all-reduce to allow overlapping compute and communication across
     microbatches. If no microbatch context is active, these calls are no-ops.
     """
+    to_comm, to_compute = _get_yield_funcs()
     # Switch from compute stream to comm stream and yield to the sibling
     # microbatch (no-op if microbatching is not active).
-    yield_and_switch_from_compute_to_comm(schedule="default")
+    to_comm(schedule="default")
     out = get_tp_group().all_reduce(input_)
     # Switch back from comm stream to compute stream and wait on comm (no-op if
     # microbatching is not active).
-    yield_and_switch_from_comm_to_compute(schedule="default")
+    to_compute(schedule="default")
     return out
 
 
