@@ -7,11 +7,29 @@ import torch
 import torch.distributed
 
 from .parallel_state import get_tp_group
+# Insert microbatch yield helpers. These are no-ops if microbatching is disabled
+# or no UBatchContext is active for the current thread.
+from vllm.v1.worker.ubatching import (
+    yield_and_switch_from_compute_to_comm,
+    yield_and_switch_from_comm_to_compute,
+)
 
 
 def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
-    """All-reduce the input tensor across model parallel group."""
-    return get_tp_group().all_reduce(input_)
+    """All-reduce the input tensor across model parallel group.
+
+    When microbatching (DBO) is enabled, insert yield points around the
+    all-reduce to allow overlapping compute and communication across
+    microbatches. If no microbatch context is active, these calls are no-ops.
+    """
+    # Switch from compute stream to comm stream and yield to the sibling
+    # microbatch (no-op if microbatching is not active).
+    yield_and_switch_from_compute_to_comm(schedule="default")
+    out = get_tp_group().all_reduce(input_)
+    # Switch back from comm stream to compute stream and wait on comm (no-op if
+    # microbatching is not active).
+    yield_and_switch_from_comm_to_compute(schedule="default")
+    return out
 
 
 def tensor_model_parallel_all_gather(input_: torch.Tensor,
