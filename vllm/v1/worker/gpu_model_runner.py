@@ -609,19 +609,30 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         num_reqs = self.input_batch.num_reqs
-        should_attempt_ubatching = \
-            self.parallel_config.enable_microbatching and \
-            total_num_scheduled_tokens >= \
-            self.parallel_config.microbatching_token_threshold \
-            and max_num_scheduled_tokens == 1
+        # Decode-only path: max_num_scheduled_tokens == 1
+        decode_only = (max_num_scheduled_tokens == 1)
+        # Experimental prefill-only path (no cached decodes scheduled)
+        prefill_only = (
+            hasattr(scheduler_output, "scheduled_cached_reqs") and
+            getattr(scheduler_output.scheduled_cached_reqs, "req_ids", []) == [] and
+            getattr(scheduler_output, "scheduled_new_reqs", []) != []
+        )
+        allow_prefill_ubatch = (
+            os.getenv("VLLM_EXPERIMENTAL_PREFILL_DBO", "0") == "1"
+        )
+        should_attempt_ubatching = (
+            self.parallel_config.enable_microbatching and
+            total_num_scheduled_tokens >=
+            self.parallel_config.microbatching_token_threshold and
+            (decode_only or (allow_prefill_ubatch and prefill_only))
+        )
 
         # Don't microbatch unless every other DP worker is also microbatching
         should_ubatch = self.should_ubatch(should_attempt_ubatching)
         if not should_ubatch:
             return (None, 0, None)
 
-        # For pure decode we can just create ubatches by cutting the request
-        # in half
+        # Create ubatches by cutting the scheduled batch roughly in half
         b0_reqs_end = num_reqs // 2
         b0_tokens_end = total_num_scheduled_tokens // 2
         assert b0_reqs_end < num_reqs and \
@@ -882,7 +893,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     ubatch_slices, common_attn_metadata)
                 for ubid, common_attn_metadata in enumerate(
                         common_attn_metadata_list):
-                    assert common_attn_metadata.max_query_len == 1
+                    # Decode ubatch uses max_query_len == 1. For experimental
+                    # prefill ubatch (when enabled), allow >1.
+                    if os.getenv("VLLM_EXPERIMENTAL_PREFILL_DBO", "0") != "1":
+                        assert common_attn_metadata.max_query_len == 1
                     attn_metadata_i = (
                         self.attn_metadata_builders[kv_cache_group_id].build(
                             common_prefix_len=common_prefix_len,
