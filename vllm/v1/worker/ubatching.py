@@ -117,13 +117,28 @@ class UBatchContext:
 
 _CURRENT_CONTEXT: dict = {}
 
+# Global flag to indicate whether ubatching is active in this worker process.
+_UBATCHING_ACTIVE: bool = False
+
+def is_ubatching_globally_enabled() -> bool:
+    """Return True if ubatching contexts have been created and are in use.
+    This function avoids calling threading.get_ident so it is safe under Dynamo.
+    """
+    return _UBATCHING_ACTIVE
+
 
 def get_current_ubatch_context() -> Optional[UBatchContext]:
     global _CURRENT_CONTEXT
     """
     Get the current UBatchContext for the current thread.
     """
-    return _CURRENT_CONTEXT.get(threading.get_ident(), None)
+    try:
+        return _CURRENT_CONTEXT.get(threading.get_ident(), None)
+    except Exception:
+        # When running under TorchDynamo or other compilation modes,
+        # threading.get_ident() may fail. In such cases, return None
+        # to gracefully skip ubatching operations.
+        return None
 
 
 def yield_and_switch_from_compute_to_comm(schedule="default"):
@@ -152,6 +167,9 @@ def make_ubatch_contexts(
     """
     Create a context manager for micro-batching synchronization.
     """
+    global _UBATCHING_ACTIVE
+    _UBATCHING_ACTIVE = True
+
     cpu_events = [threading.Event() for _ in range(num_micro_batches)]
     gpu_comm_done_events = [
         torch.cuda.Event() for _ in range(num_micro_batches)

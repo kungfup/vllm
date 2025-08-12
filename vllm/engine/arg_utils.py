@@ -1535,7 +1535,7 @@ class EngineArgs:
         if model_config.runner_type != "pooling":
             self.enable_chunked_prefill = True
             if self.enable_prefix_caching is None:
-                self.enable_prefix_caching = True
+                self.enable_prefix_caching = False
         else:
 
             pooling_type = model_config.pooler_config.pooling_type

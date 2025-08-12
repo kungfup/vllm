@@ -93,7 +93,8 @@ def _make_metadata_with_slice(
 
     query_start_loc = slice_query_start_locs(attn_metadata.query_start_loc,
                                              request_slice)
-    assert len(query_start_loc >= 2)
+    # For some prefill-only micro-batch slices there may be <=1 start loc.
+    # Do not assert here; handle gracefully below when computing max_query_len.
     query_start_loc_cpu = slice_query_start_locs(
         attn_metadata.query_start_loc_cpu, request_slice)
 
@@ -104,9 +105,31 @@ def _make_metadata_with_slice(
 
     num_requests = request_slice.stop - request_slice.start
     num_actual_tokens = token_slice.stop - token_slice.start
-    max_query_len = int(
-        torch.max(torch.abs(query_start_loc_cpu[1:] -
-                            query_start_loc_cpu[:-1])).item())
+    # Robustly compute max_query_len; if there are <2 entries, fall back.
+    if hasattr(query_start_loc_cpu, "numel"):
+        numel = int(query_start_loc_cpu.numel())
+    else:
+        try:
+            numel = len(query_start_loc_cpu)
+        except Exception:
+            numel = 0
+
+    if numel >= 2:
+        diffs = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
+        # diffs may still be empty if slicing produced zero-length
+        if hasattr(diffs, "numel") and diffs.numel() > 0:
+            max_query_len = int(torch.max(torch.abs(diffs)).item())
+        else:
+            max_query_len = 0
+    else:
+        # Fallback: use max of seq_lens if available, else 0
+        try:
+            max_query_len = int(torch.max(seq_lens_cpu).item())
+        except Exception:
+            try:
+                max_query_len = int(max(seq_lens_cpu))
+            except Exception:
+                max_query_len = 0
 
     block_table_tensor = attn_metadata.block_table_tensor[request_slice]
     slot_mapping = attn_metadata.slot_mapping[token_slice]

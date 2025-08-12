@@ -350,7 +350,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name",
         type=str,
-        default="/home/yzh/model/Qwen/Qwen2.5-7B-Instruct",
+        default="/home/yzh/model/Qwen/Qwen2.5-VL-32B-Instruct/",
         help="模型路径",
     )
     # 服务信息

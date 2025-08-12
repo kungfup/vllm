@@ -389,7 +389,10 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             split_decodes_and_prefills(common_attn_metadata)
 
         page_size = self.kv_cache_spec.block_size
-        max_seq_len = common_attn_metadata.seq_lens_cpu.max()
+        if common_attn_metadata.seq_lens_cpu.numel() > 0:
+            max_seq_len = int(common_attn_metadata.seq_lens_cpu.max())
+        else:
+            max_seq_len = 0
         seq_lens = common_attn_metadata.seq_lens
         seq_lens_cpu = common_attn_metadata.seq_lens_cpu
         block_table_tensor = common_attn_metadata.block_table_tensor

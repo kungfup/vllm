@@ -40,6 +40,18 @@ def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
     all-reduce to allow overlapping compute and communication across
     microbatches. If no microbatch context is active, these calls are no-ops.
     """
+    # Fast path: if ubatching is not globally enabled, skip any yield logic to
+    # avoid introducing Dynamo-unfriendly symbols (e.g., threading.get_ident).
+    try:
+        from vllm.v1.worker.ubatching import (  # type: ignore
+            is_ubatching_globally_enabled as _is_enabled,
+        )
+        if not _is_enabled():
+            return get_tp_group().all_reduce(input_)
+    except Exception:
+        # Any failure to import or query the flag: fall back to vanilla all_reduce.
+        return get_tp_group().all_reduce(input_)
+
     to_comm, to_compute = _get_yield_funcs()
     # Switch from compute stream to comm stream and yield to the sibling
     # microbatch (no-op if microbatching is not active).

@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import contextlib
 import dataclasses
 import gc
+import inspect
+import os
 import threading
 import time
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Optional, TypeAlias, Union, cast
+from typing import TYPE_CHECKING, Any, Optional, TypeAlias, Union, cast, Sequence
 
 import numpy as np
 import torch
@@ -633,16 +635,25 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             return (None, 0, None)
 
         # Create ubatches by cutting the scheduled batch roughly in half
-        b0_reqs_end = num_reqs // 2
-        b0_tokens_end = total_num_scheduled_tokens // 2
-        assert b0_reqs_end < num_reqs and \
-            b0_tokens_end < total_num_scheduled_tokens
-        ubatch_slices = [
-            (slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
-            (slice(b0_reqs_end,
-                   num_reqs), slice(b0_tokens_end,
-                                    total_num_scheduled_tokens)),
-        ]
+        b0_tokens_end = max(1, total_num_scheduled_tokens // 2)
+        if b0_tokens_end >= total_num_scheduled_tokens:
+            # Not enough tokens to split
+            return (None, 0, None)
+
+        if prefill_only and allow_prefill_ubatch and num_reqs < 2:
+            # Abort prefill ubatching for single-request to avoid inconsistent
+            # metadata between request-sliced cu_seqlens and token-sliced slot_mapping
+            return (None, 0, None)
+        else:
+            b0_reqs_end = max(1, num_reqs // 2)
+            # Ensure the second ubatch also has at least one request
+            if b0_reqs_end >= num_reqs:
+                return (None, 0, None)
+            ubatch_slices = [
+                (slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
+                (slice(b0_reqs_end, num_reqs),
+                 slice(b0_tokens_end, total_num_scheduled_tokens)),
+            ]
 
         # Compute ubatch padding. This currently only accounts for DP padding
         num_pad_tokens = 0
@@ -2339,7 +2350,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         except IndexError:
             return {}
 
-    @contextmanager
+    @contextlib.contextmanager
     def maybe_randomize_inputs(self, input_ids: torch.Tensor):
         """
         Randomize input_ids if VLLM_RANDOMIZE_DP_DUMMY_INPUTS is set.
@@ -2743,7 +2754,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         start_time = time.perf_counter()
         start_free_gpu_memory = torch.cuda.mem_get_info()[0]
 
-        @contextmanager
+        @contextlib.contextmanager
         def freeze_gc():
             # Optimize garbage collection during CUDA graph capture.
             # Clean up, then freeze all remaining objects from being included

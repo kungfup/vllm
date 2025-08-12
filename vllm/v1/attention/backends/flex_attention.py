@@ -281,7 +281,10 @@ class FlexAttentionMetadataBuilder(
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         max_query_len = common_attn_metadata.max_query_len
 
-        max_seq_len = int(common_attn_metadata.seq_lens_cpu.max())
+        if common_attn_metadata.seq_lens_cpu.numel() > 0:
+            max_seq_len = int(common_attn_metadata.seq_lens_cpu.max())
+        else:
+            max_seq_len = 0
         query_start_loc = common_attn_metadata.query_start_loc
         seq_lens = common_attn_metadata.seq_lens
         block_table_tensor = common_attn_metadata.block_table_tensor

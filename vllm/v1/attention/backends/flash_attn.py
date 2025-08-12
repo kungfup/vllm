@@ -199,7 +199,8 @@ class FlashAttentionMetadataBuilder(
     def build(self,
               common_prefix_len: int,
               common_attn_metadata: CommonAttentionMetadata,
-              fast_build: bool = False) -> FlashAttentionMetadata:
+              fast_build: bool = False,
+              ubatch_id: int | None = None) -> FlashAttentionMetadata:
         """
         fast_build disables AOT scheduling, used when there will be few 
         iterations i.e. spec-decode
@@ -207,7 +208,11 @@ class FlashAttentionMetadataBuilder(
         num_reqs = common_attn_metadata.num_reqs
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         max_query_len = common_attn_metadata.max_query_len
-        max_seq_len = int(common_attn_metadata.seq_lens_cpu.max())
+        # Handle empty seq_lens_cpu to avoid max() error on empty tensor
+        if common_attn_metadata.seq_lens_cpu.numel() > 0:
+            max_seq_len = int(common_attn_metadata.seq_lens_cpu.max())
+        else:
+            max_seq_len = 0
         query_start_loc = common_attn_metadata.query_start_loc
         seq_lens = common_attn_metadata.seq_lens
         seq_lens_cpu = common_attn_metadata.seq_lens_cpu
