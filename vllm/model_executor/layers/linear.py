@@ -659,7 +659,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                          return_bias=return_bias)
 
     def weight_loader(self,
-                      param: Parameter,
+                      param: Union[Parameter, BasevLLMParameter],
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[int] = None):
 
@@ -1234,13 +1234,13 @@ class RowParallelLinear(LinearBase):
 
     The linear layer is defined as Y = XA + b. A is parallelized along
     its first dimension and X along its second dimension as:
-               -   -
-              | A_1 |
-              | .   |
-          A = | .   |        X = [X_1, ..., X_p]
-              | .   |
-              | A_p |
-               -   -
+           -   -
+          | A_1 |
+          | .   |
+      A = | .   |        X = [X_1, ..., X_p]
+          | .   |
+          | A_p |
+           -   -
     Arguments:
         input_size: first dimension of matrix A.
         output_size: second dimension of matrix A.
@@ -1318,6 +1318,20 @@ class RowParallelLinear(LinearBase):
         else:
             self.register_parameter("bias", None)
 
+    def _infer_schedule_for_all_reduce(self) -> str:
+        """Heuristically infer whether this layer's all-reduce belongs to
+        attention output projection ("attn") or FFN down projection ("ffn").
+        Fallback to "default" if unknown.
+        """
+        p = (self.prefix or "").lower()
+        # Attention output projection common names
+        if any(k in p for k in [".o_proj", ".out_proj", ".c_proj"]) or ("attn" in p and ("proj" in p or "out" in p)):
+            return "attn"
+        # FFN down projection common names across models
+        if any(k in p for k in [".down_proj", ".fc2", ".dense_4h_to_h", ".w2"]):
+            return "ffn"
+        return "default"
+
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         input_dim = getattr(param, "input_dim", None)
         use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
@@ -1386,7 +1400,9 @@ class RowParallelLinear(LinearBase):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            output = tensor_model_parallel_all_reduce(output_parallel)
+            schedule = self._infer_schedule_for_all_reduce()
+            output = tensor_model_parallel_all_reduce(output_parallel,
+                                                      schedule=schedule)
         else:
             output = output_parallel
 

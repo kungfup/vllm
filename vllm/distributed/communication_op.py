@@ -33,7 +33,9 @@ def _get_yield_funcs():
         return _noop_to_comm, _noop_to_compute
 
 
-def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
+def tensor_model_parallel_all_reduce(input_: torch.Tensor,
+                                     *,
+                                     schedule: str = "default") -> torch.Tensor:
     """All-reduce the input tensor across model parallel group.
 
     When microbatching (DBO) is enabled, insert yield points around the
@@ -53,13 +55,9 @@ def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
         return get_tp_group().all_reduce(input_)
 
     to_comm, to_compute = _get_yield_funcs()
-    # Switch from compute stream to comm stream and yield to the sibling
-    # microbatch (no-op if microbatching is not active).
-    to_comm(schedule="default")
+    to_comm(schedule=schedule)
     out = get_tp_group().all_reduce(input_)
-    # Switch back from comm stream to compute stream and wait on comm (no-op if
-    # microbatching is not active).
-    to_compute(schedule="default")
+    to_compute(schedule=schedule)
     return out
 
 

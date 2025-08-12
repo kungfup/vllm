@@ -32,8 +32,12 @@ class UBatchContext:
         self.cpu_wait_event = cpu_wait_event
         self.cpu_signal_event = cpu_signal_event
         self.current_stream = compute_stream
-        self.gpu_comm_done_event = gpu_comm_done_event
-        self.gpu_compute_done_event = gpu_compute_done_event
+        # Backward-compatible default events; per-schedule maps will be used.
+        self._default_gpu_comm_done_event = gpu_comm_done_event
+        self._default_gpu_compute_done_event = gpu_compute_done_event
+        # Per-schedule event maps created lazily on first use.
+        self._gpu_comm_done_events: dict[str, torch.cuda.Event] = {}
+        self._gpu_compute_done_events: dict[str, torch.cuda.Event] = {}
         self.schedule = schedule
 
     def __enter__(self):
@@ -65,17 +69,35 @@ class UBatchContext:
         self.current_stream = stream
         torch.cuda.set_stream(self.current_stream)
 
-    def _signal_comm_done(self):
-        self.gpu_comm_done_event.record(self.comm_stream)
+    def _get_compute_event(self, schedule: str) -> torch.cuda.Event:
+        if schedule == "default":
+            return self._default_gpu_compute_done_event
+        evt = self._gpu_compute_done_events.get(schedule)
+        if evt is None:
+            evt = torch.cuda.Event()
+            self._gpu_compute_done_events[schedule] = evt
+        return evt
 
-    def _signal_compute_done(self):
-        self.gpu_compute_done_event.record(self.compute_stream)
+    def _get_comm_event(self, schedule: str) -> torch.cuda.Event:
+        if schedule == "default":
+            return self._default_gpu_comm_done_event
+        evt = self._gpu_comm_done_events.get(schedule)
+        if evt is None:
+            evt = torch.cuda.Event()
+            self._gpu_comm_done_events[schedule] = evt
+        return evt
 
-    def _wait_compute_done(self):
-        self.comm_stream.wait_event(self.gpu_compute_done_event)
+    def _signal_comm_done(self, schedule: str):
+        self._get_comm_event(schedule).record(self.comm_stream)
 
-    def _wait_comm_done(self):
-        self.compute_stream.wait_event(self.gpu_comm_done_event)
+    def _signal_compute_done(self, schedule: str):
+        self._get_compute_event(schedule).record(self.compute_stream)
+
+    def _wait_compute_done(self, schedule: str):
+        self.comm_stream.wait_event(self._get_compute_event(schedule))
+
+    def _wait_comm_done(self, schedule: str):
+        self.compute_stream.wait_event(self._get_comm_event(schedule))
 
     def stream_string(self):
         if current_stream() == self.compute_stream:
@@ -98,21 +120,21 @@ class UBatchContext:
         self.cpu_wait_event.clear()
         self._restore_context()
 
-    def yield_and_switch_from_compute_to_comm(self):
+    def yield_and_switch_from_compute_to_comm(self, schedule: str = "default"):
         assert current_stream() == self.compute_stream
-        self._signal_compute_done()
+        self._signal_compute_done(schedule)
         self._cpu_yield()
         assert self.current_stream == self.compute_stream
         self.update_stream(self.comm_stream)
-        self._wait_compute_done()
+        self._wait_compute_done(schedule)
 
-    def yield_and_switch_from_comm_to_compute(self):
+    def yield_and_switch_from_comm_to_compute(self, schedule: str = "default"):
         assert current_stream() == self.comm_stream
-        self._signal_comm_done()
+        self._signal_comm_done(schedule)
         self._cpu_yield()
         assert self.current_stream == self.comm_stream
         self.update_stream(self.compute_stream)
-        self._wait_comm_done()
+        self._wait_comm_done(schedule)
 
 
 _CURRENT_CONTEXT: dict = {}
@@ -144,15 +166,15 @@ def get_current_ubatch_context() -> Optional[UBatchContext]:
 def yield_and_switch_from_compute_to_comm(schedule="default"):
     # Perform the barrier if a context exists for this thread
     ctx = get_current_ubatch_context()
-    if ctx is not None and ctx.schedule == schedule:
-        ctx.yield_and_switch_from_compute_to_comm()
+    if ctx is not None:
+        ctx.yield_and_switch_from_compute_to_comm(schedule)
 
 
 def yield_and_switch_from_comm_to_compute(schedule="default"):
     # Perform the barrier if a context exists for this thread
     ctx = get_current_ubatch_context()
-    if ctx is not None and ctx.schedule == schedule:
-        ctx.yield_and_switch_from_comm_to_compute()
+    if ctx is not None:
+        ctx.yield_and_switch_from_comm_to_compute(schedule)
 
 
 def make_ubatch_contexts(
