@@ -620,7 +620,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             getattr(scheduler_output, "scheduled_new_reqs", []) != []
         )
         allow_prefill_ubatch = (
-            os.getenv("VLLM_EXPERIMENTAL_PREFILL_DBO", "0") == "1"
+            os.getenv("VLLM_EXPERIMENTAL_PREFILL_DBO", "1") == "1"
         )
         should_attempt_ubatching = (
             self.parallel_config.enable_microbatching and
